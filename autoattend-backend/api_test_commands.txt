@@ -1,0 +1,66 @@
+# AutoAttender API Test Commands
+# Note: Since the database is currently not running (PostgreSQL via Docker skipped),
+# these requests will likely fail with a 500 Internal Server Error when it tries
+# to connect to the database.
+# However, this validates the routing and input validation schemas.
+
+# For Windows PowerShell, use `Invoke-RestMethod` or `curl.exe` explicitly instead of `curl` 
+# because PowerShell aliases `curl` to `Invoke-WebRequest` which behaves differently.
+# All commands below use `curl.exe` to ensure standard cURL behavior.
+
+### 1. auth.py ###
+
+# Login (Get Access Token)
+# Expects: x-www-form-urlencoded
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/auth/login" `
+  -H "Content-Type: application/x-www-form-urlencoded" `
+  -d "username=student@school.edu&password=secretpassword"
+
+
+### 2. users.py ###
+
+# Create a New User
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/users/" `
+  -H "Content-Type: application/json" `
+  -d '{"email": "student@school.edu", "password": "secretpassword", "full_name": "John Doe", "role": "student"}'
+
+# Get Current User Profile
+# (Requires replacing YOUR_TOKEN_HERE with the token from /auth/login)
+curl.exe -X GET "http://127.0.0.1:8000/api/v1/users/me" `
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+
+# Update Current User
+curl.exe -X PUT "http://127.0.0.1:8000/api/v1/users/me" `
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" `
+  -H "Content-Type: application/json" `
+  -d '{"full_name": "Johnathon Doe"}'
+
+
+### 3. timetable.py ###
+
+# Get Timetable (Sessions)
+curl.exe -X GET "http://127.0.0.1:8000/api/v1/timetable/" `
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+
+
+### 4. attendance.py ###
+
+# Get my attendance logs (Student role required)
+curl.exe -X GET "http://127.0.0.1:8000/api/v1/attendance/my" `
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+
+# Get course attendance logs (Teacher role required)
+# Replace COURSE_UUID with a valid UUID
+curl.exe -X GET "http://127.0.0.1:8000/api/v1/attendance/course/123e4567-e89b-12d3-a456-426614174000" `
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+
+# Mark Attendance Manually (Teacher role required)
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/attendance/mark?session_id=123e4567-e89b-12d3-a456-426614174000&student_id=123e4567-e89b-12d3-a456-426614174001&status=present" `
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
+
+# Scan Attendance via ML (Face Recognition)
+# Assuming you have a test image called 'face.jpg' in the current directory
+curl.exe -X POST "http://127.0.0.1:8000/api/v1/attendance/scan?session_id=123e4567-e89b-12d3-a456-426614174000" `
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" `
+  -H "Content-Type: multipart/form-data" `
+  -F "file=@face.jpg"
