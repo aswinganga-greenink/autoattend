@@ -1,13 +1,15 @@
 import { useState, useEffect } from "react";
-import { Search, Download, Filter } from "lucide-react";
+import { Search, Download, Filter, Calendar } from "lucide-react";
 import { api } from "@/lib/api";
 
 const TeacherAttendance = () => {
   const [search, setSearch] = useState("");
-  const [students, setStudents] = useState<any[]>([]);
-  const [classes, setClasses] = useState<{ id: string, name: string }[]>([]);
-  const [classFilter, setClassFilter] = useState("all");
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string>("all");
+  const [courses, setCourses] = useState<{ id: string; name: string }[]>([]);
+  const [attendanceData, setAttendanceData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetchData();
@@ -15,77 +17,165 @@ const TeacherAttendance = () => {
 
   const fetchData = async () => {
     try {
-      // 1. Fetch courses
+      // 1. Fetch teacher's courses
       const coursesRes = await api.get("/courses/teacher/my-courses");
       const fetchedCourses = coursesRes.data;
-      console.log("Teacher courses:", fetchedCourses);
-      setClasses(fetchedCourses.map((c: any) => ({ id: c.id, name: c.name })));
+      setCourses(fetchedCourses.map((c: any) => ({ id: c.id, name: c.name })));
 
-      // 2. Fetch students and their recent attendance per course
-      let allData: any[] = [];
-
+      // 2. Fetch sessions for all courses
+      let allSessions: any[] = [];
       for (const c of fetchedCourses) {
-        // Get roster
-        const rosterRes = await api.get(`/courses/${c.id}/students`);
-        const roster = rosterRes.data;
-        console.log(`Roster for course ${c.name}:`, roster);
-
-        // Get attendance logs for this course to calculate a rough status
-        const logsRes = await api.get(`/attendance/course/${c.id}`);
-        const logs = logsRes.data;
-        console.log(`Logs for course ${c.name}:`, logs);
-
-        roster.forEach((st: any) => {
-          // Find the most recent log for this student
-          const studentLogs = logs.filter((l: any) => l.student_id === st.id)
-            .sort((a: any, b: any) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-          const recentLog = studentLogs.length > 0 ? studentLogs[0] : null;
-          let status = "absent";
-          let lastSeen = "Never";
-
-          if (recentLog) {
-            status = recentLog.status.toLowerCase();
-            lastSeen = new Date(recentLog.timestamp).toLocaleString();
-          }
-
-          allData.push({
-            id: st.id,
-            name: st.full_name,
-            registerNumber: `STU-${st.id.substring(0, 4).toUpperCase()}`,
-            className: c.name,
-            courseId: c.id,
-            status: status,
-            lastSeen: lastSeen
-          });
+        const sessRes = await api.get(`/courses/${c.id}/sessions`);
+        sessRes.data.forEach((s: any) => {
+          allSessions.push({ ...s, courseName: c.name });
         });
       }
+      setSessions(allSessions);
 
-      console.log("Final allData array:", allData);
-      setStudents(allData);
+      // 3. Load attendance for most-recent session by default
+      if (allSessions.length > 0) {
+        const latestSession = allSessions[allSessions.length - 1];
+        setSelectedSessionId(latestSession.id);
+        await loadSessionAttendance(latestSession.id, fetchedCourses);
+      }
     } catch (e) {
-      console.error(e);
+      console.error("Failed to load teacher attendance data:", e);
     } finally {
       setLoading(false);
     }
   };
 
-  const filtered = students.filter((s) => {
-    const matchSearch = s.name.toLowerCase().includes(search.toLowerCase()) || s.registerNumber.toLowerCase().includes(search.toLowerCase());
-    const matchClass = classFilter === "all" || s.courseId === classFilter;
-    return matchSearch && matchClass;
-  });
+  const loadSessionAttendance = async (sessionId: string, fallbackCourses?: any[]) => {
+    if (sessionId === "all") {
+      setAttendanceData([]);
+      return;
+    }
+    setLoading(true);
+    try {
+      // Get attendance records for this session
+      const attRes = await api.get(`/attendance/session/${sessionId}`);
+      const records = attRes.data;
 
-  const toggleStatus = async (id: string, currentStatus: string, courseId: string) => {
-    // In a real scenario, this would POST to /api/v1/attendance/mark
-    // For now we just update UI optimizations since we'd need a specific session_id to mark
-    setStudents((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, status: s.status === "present" ? "absent" : "present" } : s))
-    );
+      // Find which course this session belongs to
+      const session = sessions.find(s => s.id === sessionId) ||
+        { course: { id: "" } };
+      const courseId = session.course?.id || session.course_id;
+
+      // Get full roster for this course
+      const rosterRes = await api.get(`/courses/${courseId}/students`);
+      const roster = rosterRes.data;
+
+      // Merge roster with attendance records
+      const merged = roster.map((student: any) => {
+        const record = records.find((r: any) => r.student_id === student.id);
+        return {
+          id: student.id,
+          name: student.full_name,
+          email: student.email,
+          registerNumber: `STU-${student.id.substring(0, 4).toUpperCase()}`,
+          status: record ? record.status.toLowerCase() : "absent",
+          hasExistingRecord: !!record,
+          sessionId,
+          courseId,
+        };
+      });
+      setAttendanceData(merged);
+    } catch (e) {
+      console.error("Failed to load session attendance:", e);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  // Called when session picker changes
+  const handleSessionChange = async (sessionId: string) => {
+    setSelectedSessionId(sessionId);
+    await loadSessionAttendance(sessionId);
+  };
+
+  // Toggle attendance and immediately persist to backend
+  const toggleStatus = async (studentId: string, currentStatus: string, sessionId: string) => {
+    const newStatus = currentStatus === "present" ? "absent" : "present";
+
+    // Optimistic UI update
+    setAttendanceData(prev =>
+      prev.map(s => s.id === studentId ? { ...s, status: newStatus } : s)
+    );
+
+    setSaving(prev => ({ ...prev, [studentId]: true }));
+    try {
+      await api.post("/attendance/mark", {
+        session_id: sessionId,
+        student_id: studentId,
+        status: newStatus.toUpperCase(),
+        marked_by: "teacher",
+      });
+    } catch (e: any) {
+      console.error("Failed to mark attendance:", e);
+      // Roll back on error
+      setAttendanceData(prev =>
+        prev.map(s => s.id === studentId ? { ...s, status: currentStatus } : s)
+      );
+    } finally {
+      setSaving(prev => ({ ...prev, [studentId]: false }));
+    }
+  };
+
+  // Export current view as CSV
+  const exportCSV = () => {
+    if (attendanceData.length === 0) return;
+    const sessionLabel = sessions.find(s => s.id === selectedSessionId)?.courseName || "attendance";
+    const rows = [
+      ["Name", "Register No.", "Email", "Status"],
+      ...attendanceData.map(s => [s.name, s.registerNumber, s.email, s.status]),
+    ];
+    const csv = rows.map(r => r.join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${sessionLabel.replace(/\s+/g, "_")}_attendance.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const filtered = attendanceData.filter(s =>
+    s.name.toLowerCase().includes(search.toLowerCase()) ||
+    s.registerNumber.toLowerCase().includes(search.toLowerCase())
+  );
+
+  const presentCount = attendanceData.filter(s => s.status === "present").length;
 
   return (
     <div className="space-y-6">
+      {/* Session Picker */}
+      <div className="glass-card p-4 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+          <Calendar className="w-4 h-4 text-primary" />
+          Session:
+        </div>
+        <select
+          value={selectedSessionId}
+          onChange={(e) => handleSessionChange(e.target.value)}
+          className="flex-1 px-3 py-2 bg-secondary/50 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+        >
+          <option value="all">— Select a session —</option>
+          {sessions.map(s => (
+            <option key={s.id} value={s.id}>
+              {s.courseName} · {new Date(s.start_time).toLocaleString(undefined, {
+                dateStyle: "medium", timeStyle: "short"
+              })} {s.room ? `· Room ${s.room}` : ""}
+            </option>
+          ))}
+        </select>
+        {selectedSessionId !== "all" && (
+          <div className="text-xs text-muted-foreground whitespace-nowrap">
+            <span className="text-success font-semibold">{presentCount}</span> / {attendanceData.length} present
+          </div>
+        )}
+      </div>
+
+      {/* Search & Actions */}
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -96,22 +186,14 @@ const TeacherAttendance = () => {
             className="w-full pl-10 pr-4 py-2.5 bg-secondary/50 border border-border rounded-xl text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/50"
           />
         </div>
-        <div className="flex gap-2">
-          <select
-            value={classFilter}
-            onChange={(e) => setClassFilter(e.target.value)}
-            className="px-3 py-2.5 bg-secondary/50 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-          >
-            <option value="all">All Classes</option>
-            {classes.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-          <button className="px-4 py-2.5 gradient-gold text-primary-foreground text-sm font-medium rounded-xl flex items-center gap-2 hover:opacity-90 transition-opacity">
-            <Download className="w-4 h-4" />
-            Export CSV
-          </button>
-        </div>
+        <button
+          onClick={exportCSV}
+          disabled={attendanceData.length === 0}
+          className="px-4 py-2.5 gradient-gold text-primary-foreground text-sm font-medium rounded-xl flex items-center gap-2 hover:opacity-90 transition-opacity disabled:opacity-40"
+        >
+          <Download className="w-4 h-4" />
+          Export CSV
+        </button>
       </div>
 
       <div className="glass-card overflow-hidden">
@@ -121,41 +203,43 @@ const TeacherAttendance = () => {
               <tr className="border-b border-border">
                 <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Student Name</th>
                 <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Register No.</th>
-                <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Class</th>
+                <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Email</th>
                 <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Status</th>
-                <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Last Seen</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((student) => (
-                <tr key={student.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
-                  <td className="px-5 py-3 text-sm font-medium text-foreground">{student.name}</td>
-                  <td className="px-5 py-3 text-sm text-muted-foreground">{student.registerNumber}</td>
-                  <td className="px-5 py-3 text-sm text-muted-foreground">{student.className}</td>
-                  <td className="px-5 py-3">
-                    <button
-                      onClick={() => toggleStatus(student.id, student.status, student.courseId)}
-                      className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${student.status === "present"
-                        ? "bg-success/10 text-success"
-                        : "bg-destructive/10 text-destructive"
-                        }`}
-                    >
-                      {student.status === "present" ? "Present" : "Absent"}
-                    </button>
-                  </td>
-                  <td className="px-5 py-3 text-sm text-muted-foreground">{student.lastSeen}</td>
-                </tr>
-              ))}
-
-              {filtered.length === 0 && !loading && (
+              {loading ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-muted-foreground">No students found.</td>
+                  <td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">Loading...</td>
                 </tr>
-              )}
-              {loading && (
+              ) : selectedSessionId === "all" ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-muted-foreground">Loading attendance records...</td>
+                  <td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">Select a session above to view and mark attendance.</td>
                 </tr>
+              ) : filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">No students found.</td>
+                </tr>
+              ) : (
+                filtered.map((student) => (
+                  <tr key={student.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
+                    <td className="px-5 py-3 text-sm font-medium text-foreground">{student.name}</td>
+                    <td className="px-5 py-3 text-sm text-muted-foreground">{student.registerNumber}</td>
+                    <td className="px-5 py-3 text-sm text-muted-foreground">{student.email}</td>
+                    <td className="px-5 py-3">
+                      <button
+                        onClick={() => toggleStatus(student.id, student.status, student.sessionId)}
+                        disabled={saving[student.id]}
+                        className={`px-3 py-1 rounded-full text-xs font-medium transition-all disabled:opacity-50 ${student.status === "present"
+                            ? "bg-success/10 text-success hover:bg-success/20"
+                            : "bg-destructive/10 text-destructive hover:bg-destructive/20"
+                          }`}
+                      >
+                        {saving[student.id] ? "Saving..." : student.status === "present" ? "Present" : "Absent"}
+                      </button>
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>

@@ -34,7 +34,7 @@ const StudentProfile = () => {
     setIsLoading(true);
     setMessage("");
     try {
-      await api.patch('/users/me', {
+      await api.put('/users/me', {
         full_name: form.full_name,
         email: form.email,
         ...(form.password ? { password: form.password } : {})

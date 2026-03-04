@@ -1,8 +1,8 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
-from app.schemas.schemas import UserResponse
+from app.schemas.schemas import UserResponse, CourseResponse
 
 class ClassGroupBase(BaseModel):
     name: str
@@ -11,15 +11,14 @@ class ClassGroupBase(BaseModel):
 class ClassGroupCreate(ClassGroupBase):
     pass
 
-class ClassGroupUpdate(ClassGroupBase):
+class ClassGroupUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
 
 class ClassGroupResponse(ClassGroupBase):
     id: UUID
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ClassEnrollmentResponse(BaseModel):
     id: UUID
@@ -28,8 +27,8 @@ class ClassEnrollmentResponse(BaseModel):
     enrolled_at: datetime
     student: Optional[UserResponse] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ClassGroupDetailResponse(ClassGroupResponse):
     enrollments: List[ClassEnrollmentResponse] = []
+    courses: List[CourseResponse] = []

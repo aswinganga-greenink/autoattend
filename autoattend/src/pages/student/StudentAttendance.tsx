@@ -3,19 +3,27 @@ import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
 
 const StudentAttendance = () => {
-  const [month] = useState(1); // Feb 2026 (0-indexed)
-  const year = 2026;
+  const today = new Date();
+  const [currentDate, setCurrentDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const firstDay = new Date(year, month, 1).getDay();
 
   const [records, setRecords] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchRecords = async () => {
+      setLoading(true);
       try {
-        const res = await api.get("/attendance/my-records");
-        setRecords(res.data);
+        const [recRes, statsRes] = await Promise.all([
+          api.get("/attendance/my"),
+          api.get("/attendance/stats"),
+        ]);
+        setRecords(recRes.data);
+        setStats(statsRes.data);
       } catch (err) {
         console.error("Failed to fetch attendance records", err);
       } finally {
@@ -26,35 +34,40 @@ const StudentAttendance = () => {
   }, []);
 
   const getStatus = (day: number) => {
-    // Assuming records from backend are objects with a timestamp
     const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const record = records.find((r) => r.timestamp.startsWith(dateStr));
-    return record ? "present" : null;
-    // If backend doesn't explicitly track "absent" per day, we assume lack of record = not present.
-    // However, the calendar shouldn't mark past days as "absent" unconditionally if there was no class.
-    // For now, let's keep it simple: present if recorded.
+    const record = records.find((r) => r.timestamp?.startsWith(dateStr));
+    return record ? record.status?.toLowerCase() : null;
   };
 
   const statusColor: Record<string, string> = {
     present: "bg-success text-success-foreground",
     absent: "bg-destructive text-destructive-foreground",
-    scheduled: "bg-secondary text-muted-foreground",
+    late: "bg-warning text-warning-foreground",
+    excused: "bg-secondary text-muted-foreground",
   };
 
-  const present = records.length;
-  // Without a schedule to compare against, 'absent' is hard to calculate accurately.
-  // We will default to 0 for now unless the API provides total sessions.
-  const absent = 0;
+  const present = stats?.overall?.present ?? records.filter(r => r.status?.toLowerCase() === "present").length;
+  const total = stats?.overall?.total ?? records.length;
+  const absent = total - present;
+  const pct = stats?.overall?.percentage ?? (total > 0 ? Math.round((present / total) * 100) : 0);
 
   return (
     <div className="space-y-6 max-w-2xl mx-auto">
       <div className="glass-card p-6">
         <div className="flex items-center justify-between mb-6">
-          <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground">
+          <button
+            onClick={() => setCurrentDate(new Date(year, month - 1, 1))}
+            className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground"
+          >
             <ChevronLeft className="w-4 h-4" />
           </button>
-          <h3 className="font-semibold text-foreground">February 2026</h3>
-          <button className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground">
+          <h3 className="font-semibold text-foreground">
+            {currentDate.toLocaleString("default", { month: "long", year: "numeric" })}
+          </h3>
+          <button
+            onClick={() => setCurrentDate(new Date(year, month + 1, 1))}
+            className="p-2 rounded-lg hover:bg-secondary transition-colors text-muted-foreground"
+          >
             <ChevronRight className="w-4 h-4" />
           </button>
         </div>
@@ -77,7 +90,7 @@ const StudentAttendance = () => {
             return (
               <div
                 key={day}
-                className={`aspect-square rounded-xl flex items-center justify-center text-sm font-medium transition-all ${status ? statusColor[status] : "text-muted-foreground"
+                className={`aspect-square rounded-xl flex items-center justify-center text-sm font-medium transition-all ${status && statusColor[status] ? statusColor[status] : "text-muted-foreground"
                   }`}
               >
                 {day}
@@ -87,7 +100,7 @@ const StudentAttendance = () => {
         </div>
 
         {/* Legend */}
-        <div className="flex gap-4 mt-6 justify-center">
+        <div className="flex gap-4 mt-6 justify-center flex-wrap">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <div className="w-3 h-3 rounded bg-success" /> Present
           </div>
@@ -95,26 +108,30 @@ const StudentAttendance = () => {
             <div className="w-3 h-3 rounded bg-destructive" /> Absent
           </div>
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <div className="w-3 h-3 rounded bg-secondary" /> Scheduled
+            <div className="w-3 h-3 rounded bg-warning" /> Late
           </div>
         </div>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
-        <div className="glass-card p-4 text-center">
-          <p className="text-2xl font-bold text-success">{present}</p>
-          <p className="text-xs text-muted-foreground">Present</p>
+      {loading ? (
+        <div className="text-center text-muted-foreground text-sm py-4">Loading stats...</div>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          <div className="glass-card p-4 text-center">
+            <p className="text-2xl font-bold text-success">{present}</p>
+            <p className="text-xs text-muted-foreground">Present</p>
+          </div>
+          <div className="glass-card p-4 text-center">
+            <p className="text-2xl font-bold text-destructive">{absent}</p>
+            <p className="text-xs text-muted-foreground">Absent</p>
+          </div>
+          <div className="glass-card p-4 text-center">
+            <p className="text-2xl font-bold text-primary">{pct}%</p>
+            <p className="text-xs text-muted-foreground">Rate</p>
+          </div>
         </div>
-        <div className="glass-card p-4 text-center">
-          <p className="text-2xl font-bold text-destructive">{absent}</p>
-          <p className="text-xs text-muted-foreground">Absent</p>
-        </div>
-        <div className="glass-card p-4 text-center">
-          <p className="text-2xl font-bold text-primary">{Math.round((present / (present + absent)) * 100)}%</p>
-          <p className="text-xs text-muted-foreground">Rate</p>
-        </div>
-      </div>
+      )}
     </div>
   );
 };

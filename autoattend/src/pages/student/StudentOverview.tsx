@@ -31,7 +31,7 @@ const StudentOverview = () => {
 
   const fetchStats = async () => {
     try {
-      const res = await api.get("/attendance/stats/me");
+      const res = await api.get("/attendance/stats");
       setStats(res.data);
     } catch (e) {
       console.error("Failed to fetch student stats", e);
