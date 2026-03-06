@@ -14,6 +14,7 @@ import AdminOverview from "@/pages/admin/AdminOverview";
 import AdminUsers from "@/pages/admin/AdminUsers";
 import AdminClasses from "@/pages/admin/AdminClasses";
 import AdminCourses from "@/pages/admin/AdminCourses";
+import AdminML from "@/pages/admin/AdminML";
 import StudentOverview from "@/pages/student/StudentOverview";
 import StudentAttendance from "@/pages/student/StudentAttendance";
 import StudentProfile from "@/pages/student/StudentProfile";
@@ -44,6 +45,7 @@ const App = () => (
               <Route path="users" element={<AdminUsers />} />
               <Route path="classes" element={<AdminClasses />} />
               <Route path="courses" element={<AdminCourses />} />
+              <Route path="ml" element={<AdminML />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
 

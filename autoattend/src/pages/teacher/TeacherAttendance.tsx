@@ -1,71 +1,61 @@
-import { useState, useEffect } from "react";
-import { Search, Download, Filter, Calendar } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Search, Download, Calendar, ScanFace, X, Clock } from "lucide-react";
 import { api } from "@/lib/api";
 
 const TeacherAttendance = () => {
   const [search, setSearch] = useState("");
   const [sessions, setSessions] = useState<any[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>("all");
-  const [courses, setCourses] = useState<{ id: string; name: string }[]>([]);
   const [attendanceData, setAttendanceData] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<Record<string, boolean>>({});
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  // AI Scan state
+  const [showScanModal, setShowScanModal] = useState(false);
+  const [scanDuration, setScanDuration] = useState(30); // minutes
+  const [scanning, setScanning] = useState(false);
+  const [scanCountdown, setScanCountdown] = useState(0);
+  const [scanResult, setScanResult] = useState<any>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => { fetchData(); }, []);
 
   const fetchData = async () => {
     try {
-      // 1. Fetch teacher's courses
       const coursesRes = await api.get("/courses/teacher/my-courses");
       const fetchedCourses = coursesRes.data;
-      setCourses(fetchedCourses.map((c: any) => ({ id: c.id, name: c.name })));
 
-      // 2. Fetch sessions for all courses
       let allSessions: any[] = [];
       for (const c of fetchedCourses) {
         const sessRes = await api.get(`/courses/${c.id}/sessions`);
-        sessRes.data.forEach((s: any) => {
-          allSessions.push({ ...s, courseName: c.name });
-        });
+        sessRes.data.forEach((s: any) => allSessions.push({ ...s, courseName: c.name }));
       }
       setSessions(allSessions);
 
-      // 3. Load attendance for most-recent session by default
       if (allSessions.length > 0) {
-        const latestSession = allSessions[allSessions.length - 1];
-        setSelectedSessionId(latestSession.id);
-        await loadSessionAttendance(latestSession.id, fetchedCourses);
+        const latest = allSessions[allSessions.length - 1];
+        setSelectedSessionId(latest.id);
+        await loadSessionAttendance(latest.id, fetchedCourses);
       }
     } catch (e) {
-      console.error("Failed to load teacher attendance data:", e);
+      console.error("Failed to load data:", e);
     } finally {
       setLoading(false);
     }
   };
 
   const loadSessionAttendance = async (sessionId: string, fallbackCourses?: any[]) => {
-    if (sessionId === "all") {
-      setAttendanceData([]);
-      return;
-    }
+    if (sessionId === "all") { setAttendanceData([]); return; }
     setLoading(true);
     try {
-      // Get attendance records for this session
       const attRes = await api.get(`/attendance/session/${sessionId}`);
       const records = attRes.data;
+      const session = sessions.find(s => s.id === sessionId);
+      const courseId = session?.course?.id || session?.course_id;
 
-      // Find which course this session belongs to
-      const session = sessions.find(s => s.id === sessionId) ||
-        { course: { id: "" } };
-      const courseId = session.course?.id || session.course_id;
-
-      // Get full roster for this course
       const rosterRes = await api.get(`/courses/${courseId}/students`);
       const roster = rosterRes.data;
 
-      // Merge roster with attendance records
       const merged = roster.map((student: any) => {
         const record = records.find((r: any) => r.student_id === student.id);
         return {
@@ -74,7 +64,6 @@ const TeacherAttendance = () => {
           email: student.email,
           registerNumber: `STU-${student.id.substring(0, 4).toUpperCase()}`,
           status: record ? record.status.toLowerCase() : "absent",
-          hasExistingRecord: !!record,
           sessionId,
           courseId,
         };
@@ -87,21 +76,14 @@ const TeacherAttendance = () => {
     }
   };
 
-  // Called when session picker changes
   const handleSessionChange = async (sessionId: string) => {
     setSelectedSessionId(sessionId);
     await loadSessionAttendance(sessionId);
   };
 
-  // Toggle attendance and immediately persist to backend
   const toggleStatus = async (studentId: string, currentStatus: string, sessionId: string) => {
     const newStatus = currentStatus === "present" ? "absent" : "present";
-
-    // Optimistic UI update
-    setAttendanceData(prev =>
-      prev.map(s => s.id === studentId ? { ...s, status: newStatus } : s)
-    );
-
+    setAttendanceData(prev => prev.map(s => s.id === studentId ? { ...s, status: newStatus } : s));
     setSaving(prev => ({ ...prev, [studentId]: true }));
     try {
       await api.post("/attendance/mark", {
@@ -110,21 +92,59 @@ const TeacherAttendance = () => {
         status: newStatus.toUpperCase(),
         marked_by: "teacher",
       });
-    } catch (e: any) {
-      console.error("Failed to mark attendance:", e);
-      // Roll back on error
-      setAttendanceData(prev =>
-        prev.map(s => s.id === studentId ? { ...s, status: currentStatus } : s)
-      );
+    } catch (e) {
+      setAttendanceData(prev => prev.map(s => s.id === studentId ? { ...s, status: currentStatus } : s));
     } finally {
       setSaving(prev => ({ ...prev, [studentId]: false }));
     }
   };
 
-  // Export current view as CSV
+  // ── AI Scan ─────────────────────────────────────────────
+  const startAiScan = async () => {
+    if (selectedSessionId === "all") return;
+    setScanning(true);
+    setScanResult(null);
+    const durationSeconds = scanDuration * 60;
+    setScanCountdown(durationSeconds);
+
+    // Live countdown
+    countdownRef.current = setInterval(() => {
+      setScanCountdown(prev => {
+        if (prev <= 1) { clearInterval(countdownRef.current!); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+
+    try {
+      const res = await api.post(
+        `/ml/recognize/${selectedSessionId}?duration=${durationSeconds}`
+      );
+      setScanResult(res.data);
+      // Refresh attendance table
+      await loadSessionAttendance(selectedSessionId);
+    } catch (err: any) {
+      setScanResult({ error: err.response?.data?.detail || "Recognition failed" });
+    } finally {
+      setScanning(false);
+      clearInterval(countdownRef.current!);
+      setScanCountdown(0);
+    }
+  };
+
+  const cancelScan = () => {
+    clearInterval(countdownRef.current!);
+    setScanning(false);
+    setScanCountdown(0);
+    setShowScanModal(false);
+    setScanResult(null);
+  };
+
+  const fmtCountdown = (sec: number) =>
+    `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
+
+  // ── CSV Export ───────────────────────────────────────────
   const exportCSV = () => {
     if (attendanceData.length === 0) return;
-    const sessionLabel = sessions.find(s => s.id === selectedSessionId)?.courseName || "attendance";
     const rows = [
       ["Name", "Register No.", "Email", "Status"],
       ...attendanceData.map(s => [s.name, s.registerNumber, s.email, s.status]),
@@ -134,7 +154,7 @@ const TeacherAttendance = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${sessionLabel.replace(/\s+/g, "_")}_attendance.csv`;
+    a.download = `attendance_${selectedSessionId}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -143,39 +163,45 @@ const TeacherAttendance = () => {
     s.name.toLowerCase().includes(search.toLowerCase()) ||
     s.registerNumber.toLowerCase().includes(search.toLowerCase())
   );
-
   const presentCount = attendanceData.filter(s => s.status === "present").length;
 
   return (
     <div className="space-y-6">
-      {/* Session Picker */}
-      <div className="glass-card p-4 flex flex-col sm:flex-row items-start sm:items-center gap-3">
-        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+      {/* Session Picker + AI Scan */}
+      <div className="glass-card p-4 flex flex-col sm:flex-row items-start sm:items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-2 text-sm font-medium text-foreground shrink-0">
           <Calendar className="w-4 h-4 text-primary" />
           Session:
         </div>
         <select
           value={selectedSessionId}
           onChange={(e) => handleSessionChange(e.target.value)}
-          className="flex-1 px-3 py-2 bg-secondary/50 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+          className="flex-1 min-w-0 px-3 py-2 bg-secondary/50 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
         >
           <option value="all">— Select a session —</option>
           {sessions.map(s => (
             <option key={s.id} value={s.id}>
-              {s.courseName} · {new Date(s.start_time).toLocaleString(undefined, {
-                dateStyle: "medium", timeStyle: "short"
-              })} {s.room ? `· Room ${s.room}` : ""}
+              {s.courseName} · {new Date(s.start_time).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}
+              {s.room ? ` · ${s.room}` : ""}
             </option>
           ))}
         </select>
         {selectedSessionId !== "all" && (
-          <div className="text-xs text-muted-foreground whitespace-nowrap">
+          <span className="text-xs text-muted-foreground whitespace-nowrap">
             <span className="text-success font-semibold">{presentCount}</span> / {attendanceData.length} present
-          </div>
+          </span>
         )}
+        <button
+          onClick={() => setShowScanModal(true)}
+          disabled={selectedSessionId === "all"}
+          className="px-4 py-2 rounded-xl text-sm font-medium flex items-center gap-2 bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40 shrink-0"
+        >
+          <ScanFace className="w-4 h-4" />
+          AI Face Scan
+        </button>
       </div>
 
-      {/* Search & Actions */}
+      {/* Search + Export */}
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -196,6 +222,7 @@ const TeacherAttendance = () => {
         </button>
       </div>
 
+      {/* Attendance Table */}
       <div className="glass-card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -209,17 +236,11 @@ const TeacherAttendance = () => {
             </thead>
             <tbody>
               {loading ? (
-                <tr>
-                  <td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">Loading...</td>
-                </tr>
+                <tr><td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">Loading...</td></tr>
               ) : selectedSessionId === "all" ? (
-                <tr>
-                  <td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">Select a session above to view and mark attendance.</td>
-                </tr>
+                <tr><td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">Select a session above to view attendance.</td></tr>
               ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">No students found.</td>
-                </tr>
+                <tr><td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">No students found.</td></tr>
               ) : (
                 filtered.map((student) => (
                   <tr key={student.id} className="border-b border-border/50 hover:bg-secondary/30 transition-colors">
@@ -245,6 +266,95 @@ const TeacherAttendance = () => {
           </table>
         </div>
       </div>
+
+      {/* AI Scan Modal */}
+      {showScanModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm">
+          <div className="bg-card w-full max-w-sm rounded-2xl shadow-xl border border-border overflow-hidden">
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+              <div className="flex items-center gap-2 font-semibold text-foreground">
+                <ScanFace className="w-4 h-4 text-primary" />
+                AI Face Recognition
+              </div>
+              {!scanning && (
+                <button onClick={cancelScan} className="text-muted-foreground hover:text-foreground transition-colors">
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            <div className="p-6 space-y-5">
+              {!scanning && !scanResult && (
+                <>
+                  <p className="text-sm text-muted-foreground">
+                    The webcam on the server machine will open and run face recognition for the selected session.
+                    Students present for ≥ 20 seconds will be marked <span className="text-success font-medium">Present</span>.
+                  </p>
+                  <div>
+                    <label className="text-sm font-medium text-foreground mb-2 block">
+                      Duration: <span className="text-primary">{scanDuration} minutes</span>
+                    </label>
+                    <input
+                      type="range"
+                      min={1} max={120} value={scanDuration}
+                      onChange={e => setScanDuration(Number(e.target.value))}
+                      className="w-full accent-primary"
+                    />
+                    <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                      <span>1 min</span><span>60 min</span><span>120 min</span>
+                    </div>
+                  </div>
+                  <button
+                    onClick={startAiScan}
+                    className="w-full py-3 gradient-gold text-primary-foreground font-semibold rounded-xl hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+                  >
+                    <ScanFace className="w-4 h-4" />
+                    Start Recognition
+                  </button>
+                </>
+              )}
+
+              {scanning && (
+                <div className="text-center space-y-4 py-2">
+                  <div className="w-20 h-20 mx-auto rounded-full border-4 border-primary/20 border-t-primary animate-spin" />
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Recognition in progress…</p>
+                    <p className="text-xs text-muted-foreground mt-1">Webcam is running on the server machine</p>
+                  </div>
+                  <div className="flex items-center justify-center gap-2 text-2xl font-mono font-bold text-primary">
+                    <Clock className="w-5 h-5" />
+                    {fmtCountdown(scanCountdown)}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Attendance will sync automatically when done.</p>
+                </div>
+              )}
+
+              {scanResult && !scanning && (
+                <div className="space-y-3">
+                  {scanResult.error ? (
+                    <div className="p-3 bg-destructive/10 border border-destructive/20 rounded-xl text-destructive text-sm">
+                      {scanResult.error}
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-success/10 border border-success/20 rounded-xl space-y-1">
+                      <p className="font-semibold text-success text-sm">Scan Complete ✓</p>
+                      <p className="text-xs text-muted-foreground">
+                        {scanResult.records_synced} records synced · {scanResult.records_skipped} skipped
+                      </p>
+                    </div>
+                  )}
+                  <button
+                    onClick={cancelScan}
+                    className="w-full py-2.5 bg-secondary text-foreground text-sm font-medium rounded-xl hover:bg-secondary/80 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
