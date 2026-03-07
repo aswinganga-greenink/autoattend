@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { ScanFace, Cpu, Users, RefreshCw, BookOpen } from "lucide-react";
+import { ScanFace, Cpu, Users, RefreshCw, BookOpen, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import { api } from "@/lib/api";
 
 const AdminML = () => {
@@ -52,12 +52,20 @@ const AdminML = () => {
         }
     };
 
-    const handleRegister = async (userId: string, studentName: string) => {
+    const handleRegister = async (userId: string) => {
         setRegistering(userId);
         setRegisterResult(prev => ({ ...prev, [userId]: null }));
         try {
+            // Blocks until capture (180 photos) + model retrain are complete
             const res = await api.post(`/ml/register/${userId}`);
-            setRegisterResult(prev => ({ ...prev, [userId]: { success: true, pid: res.data.pid } }));
+            setRegisterResult(prev => ({
+                ...prev,
+                [userId]: {
+                    success: true,
+                    images: res.data.images_captured,
+                    total: res.data.total_registered_students,
+                },
+            }));
             fetchStatus();
         } catch (err: any) {
             setRegisterResult(prev => ({
@@ -190,37 +198,55 @@ const AdminML = () => {
                             {students.length === 0 && (
                                 <tr><td colSpan={4} className="px-6 py-8 text-center text-muted-foreground">No students found</td></tr>
                             )}
+                            {/* Capturing in progress banner */}
+                            {registering && (
+                                <tr>
+                                    <td colSpan={4} className="px-6 py-3 bg-amber-500/5 border-b border-amber-500/20">
+                                        <div className="flex items-center gap-2 text-xs text-amber-600">
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                            Webcam is open on the server — follow the prompts (press C per angle). Waiting for 180 photos + model retrain…
+                                        </div>
+                                    </td>
+                                </tr>
+                            )}
                             {students.map(s => {
                                 const isRegistered = status?.student_ids?.includes(
                                     s.student_id_number || `STU-${s.id.substring(0, 8).toUpperCase()}`
                                 );
                                 const result = registerResult[s.id];
+                                const isCapturing = registering === s.id;
                                 return (
                                     <tr key={s.id} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
                                         <td className="px-6 py-3 text-sm font-medium text-foreground">{s.full_name}</td>
                                         <td className="px-6 py-3 text-sm text-muted-foreground">{s.email}</td>
                                         <td className="px-6 py-3">
-                                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${isRegistered
-                                                    ? "bg-success/10 text-success"
-                                                    : "bg-secondary text-muted-foreground"
+                                            <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${isRegistered ? "bg-success/10 text-success" : "bg-secondary text-muted-foreground"
                                                 }`}>
                                                 {isRegistered ? "Registered" : "Not registered"}
                                             </span>
                                         </td>
                                         <td className="px-6 py-3 text-right">
                                             <div className="flex items-center justify-end gap-2">
-                                                {result && (
-                                                    <span className={`text-xs ${result.success ? "text-success" : "text-destructive"}`}>
-                                                        {result.success ? `Launched (PID ${result.pid})` : result.error}
+                                                {result && !isCapturing && (
+                                                    <span className={`flex items-center gap-1 text-xs ${result.success ? "text-success" : "text-destructive"
+                                                        }`}>
+                                                        {result.success ? (
+                                                            <><CheckCircle2 className="w-3 h-3" />{result.images} photos · {result.total} in model</>
+                                                        ) : (
+                                                            <><XCircle className="w-3 h-3" />{result.error}</>
+                                                        )}
                                                     </span>
                                                 )}
                                                 <button
-                                                    onClick={() => handleRegister(s.id, s.full_name)}
-                                                    disabled={registering === s.id}
+                                                    onClick={() => handleRegister(s.id)}
+                                                    disabled={!!registering}
                                                     className="px-3 py-1.5 bg-primary/10 text-primary border border-primary/20 rounded-lg text-xs font-medium hover:bg-primary/20 transition-colors disabled:opacity-40 flex items-center gap-1.5"
                                                 >
-                                                    <ScanFace className="w-3 h-3" />
-                                                    {registering === s.id ? "Launching…" : isRegistered ? "Re-Register" : "Register"}
+                                                    {isCapturing ? (
+                                                        <><Loader2 className="w-3 h-3 animate-spin" />Capturing…</>
+                                                    ) : (
+                                                        <><ScanFace className="w-3 h-3" />{isRegistered ? "Re-Register" : "Register"}</>
+                                                    )}
                                                 </button>
                                             </div>
                                         </td>

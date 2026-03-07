@@ -39,6 +39,7 @@ class AdminUserUpdate(BaseModel):
 class UserResponse(UserBase):
     id: UUID
     is_active: bool
+    student_id_number: Optional[str] = None   # only populated for students
 
     model_config = ConfigDict(from_attributes=True)
 

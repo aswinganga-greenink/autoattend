@@ -17,6 +17,9 @@ class StudentProfileCreate(BaseModel):
     user_id: UUID
     student_id_number: str
 
+class StudentProfilePatch(BaseModel):
+    student_id_number: str
+
 @router.post("/student", response_model=StudentProfileResponse)
 async def create_student_profile(
     *,
@@ -49,6 +52,44 @@ async def create_student_profile(
     await db.commit()
     await db.refresh(db_profile)
     return db_profile
+
+@router.get("/student/me", response_model=StudentProfileResponse)
+async def get_my_student_profile(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(dependencies.get_current_active_user),
+) -> Any:
+    """
+    Get the student profile for the currently authenticated student.
+    """
+    result = await db.execute(
+        select(StudentProfile).where(StudentProfile.user_id == current_user.id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Student profile not found")
+    return profile
+
+@router.patch("/student/{user_id}", response_model=StudentProfileResponse)
+async def update_student_profile(
+    user_id: UUID,
+    profile_in: StudentProfilePatch,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(dependencies.get_current_active_user),
+) -> Any:
+    """
+    Update an existing student profile's student_id_number. Admin or teacher only.
+    """
+    result = await db.execute(select(StudentProfile).where(StudentProfile.user_id == user_id))
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Student profile not found")
+    if profile_in.student_id_number:
+        profile.student_id_number = profile_in.student_id_number
+    db.add(profile)
+    await db.commit()
+    await db.refresh(profile)
+    return profile
+
 
 @router.get("/student/{user_id}", response_model=StudentProfileResponse)
 async def get_student_profile(

@@ -35,8 +35,28 @@ ANGLES = [
 # ──────────────────────────────────────────────
 # STUDENT INFO
 # ──────────────────────────────────────────────
-student_id   = input("Enter Student ID   : ").strip()
-student_name = input("Enter Student Name : ").strip()
+import argparse
+
+# ──────────────────────────────────────────────
+# STUDENT INFO
+# Can come from: (1) CLI args (when called by backend), (2) interactive input
+# ──────────────────────────────────────────────
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--student-id", default=None)
+_parser.add_argument("--student-name", default=None)
+_args, _ = _parser.parse_known_args()
+
+if _args.student_id and _args.student_name:
+    student_id   = _args.student_id.strip()
+    student_name = _args.student_name.strip()
+else:
+    try:
+        student_id   = input("Enter Student ID   : ").strip()
+        student_name = input("Enter Student Name : ").strip()
+    except EOFError:
+        print("❌  No student ID/name provided (stdin closed). "
+              "Pass --student-id and --student-name arguments or provide interactive input.")
+        exit(1)
 
 if not student_id or not student_name:
     print("❌  Student ID and Name are both required. Exiting.")
@@ -113,6 +133,10 @@ waiting         = False   # in countdown phase?
 wait_start      = 0.0
 last_save_time  = 0.0
 
+window_name = "AutoAttender - Face Capture"
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.resizeWindow(window_name, 800, 600)
+
 while angle_idx < len(ANGLES):
     ret, frame = cap.read()
     if not ret:
@@ -171,7 +195,7 @@ while angle_idx < len(ANGLES):
             count       = 0
             capturing   = False
 
-    cv2.imshow("AutoAttender — Face Capture", frame)
+    cv2.imshow(window_name, frame)
     key = cv2.waitKey(1) & 0xFF
 
     if key == ord('c') and not capturing and not waiting and angle_idx < len(ANGLES):

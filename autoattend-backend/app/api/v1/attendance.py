@@ -10,15 +10,16 @@ from app.db.database import get_db
 from app.models.course import Attendance, Session, Course
 from app.models.user import User, UserRole
 from app.schemas.schemas import AttendanceResponse, AttendanceCreate
+from app.core.utils import is_session_active
 
 router = APIRouter()
 
 
 def _attendance_query_with_relations():
-    """Returns a select(Attendance) pre-loaded with student and session→course."""
+    """Returns a select(Attendance) pre-loaded with student and session→course→teacher."""
     return select(Attendance).options(
         selectinload(Attendance.student),
-        selectinload(Attendance.session).selectinload(Session.course),
+        selectinload(Attendance.session).selectinload(Session.course).selectinload(Course.teacher),
     )
 
 
@@ -99,6 +100,14 @@ async def mark_attendance_manual(
     )).scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+
+    # Strict Timetable Rule: Enforce time check (Allow admins to bypass)
+    if current_teacher.role != UserRole.ADMIN:
+        if not is_session_active(session):
+            raise HTTPException(
+                status_code=403, 
+                detail="Cannot modify attendance outside of scheduled class time"
+            )
 
     # Verify student exists
     student = (await db.execute(

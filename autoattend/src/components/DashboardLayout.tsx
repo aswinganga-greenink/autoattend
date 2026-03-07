@@ -27,7 +27,6 @@ const menuConfig: Record<UserRole, MenuItem[]> = {
   teacher: [
     { label: "Overview", path: "/teacher/overview", icon: LayoutDashboard },
     { label: "Attendance", path: "/teacher/attendance", icon: ClipboardList },
-    { label: "Add Student Face", path: "/teacher/add-face", icon: UserPlus },
     { label: "Student Details", path: "/teacher/students", icon: Users },
     { label: "Time Table", path: "/teacher/timetable", icon: Calendar },
     { label: "Reports", path: "/teacher/reports", icon: FileBarChart },
@@ -37,6 +36,7 @@ const menuConfig: Record<UserRole, MenuItem[]> = {
   student: [
     { label: "Overview", path: "/student/overview", icon: LayoutDashboard },
     { label: "Attendance Log", path: "/student/attendance", icon: ClipboardList },
+    { label: "Register My Face", path: "/student/add-face", icon: ScanFace },
     { label: "Time Table", path: "/student/timetable", icon: Calendar },
     { label: "Notifications", path: "/student/notifications", icon: Bell },
     { label: "Profile", path: "/student/profile", icon: User },
@@ -74,7 +74,7 @@ const DashboardLayout = () => {
             <ScanFace className="w-5 h-5 text-primary-foreground" />
           </div>
           {!collapsed && (
-            <span className="font-bold text-foreground tracking-tight text-sm">VisionAttend</span>
+            <span className="font-bold text-foreground tracking-tight text-sm">AutoAttend</span>
           )}
         </div>
 

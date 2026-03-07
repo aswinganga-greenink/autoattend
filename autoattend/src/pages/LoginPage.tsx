@@ -91,7 +91,7 @@ const LoginPage = () => {
               <ScanFace className="w-7 h-7 text-primary-foreground" />
             </div>
             <div className="text-left">
-              <h1 className="text-2xl font-bold text-foreground tracking-tight">VisionAttend</h1>
+              <h1 className="text-2xl font-bold text-foreground tracking-tight">AutoAttend</h1>
               <p className="text-xs text-muted-foreground tracking-widest uppercase">AI Face Attendance</p>
             </div>
           </div>
@@ -128,7 +128,7 @@ const LoginPage = () => {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@visionattend.edu"
+                  placeholder="you@autoattend.edu"
                   className="w-full pl-10 pr-4 py-2.5 bg-secondary/50 border border-border rounded-xl text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all"
                 />
               </div>

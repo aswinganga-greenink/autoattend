@@ -1,7 +1,8 @@
-from typing import Any, List
+from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 
 from app.api import dependencies
 from app.core.security import get_password_hash
@@ -45,11 +46,24 @@ async def get_admin_stats(
 @router.get("/students", response_model=List[UserResponse])
 async def get_all_students(
     db: AsyncSession = Depends(get_db),
-    current_admin: User = Depends(dependencies.get_current_active_admin),
+    current_user: User = Depends(dependencies.get_current_active_user),
 ) -> Any:
-    """List all student users. Admin only."""
-    result = await db.execute(select(User).where(User.role == UserRole.STUDENT))
-    return result.scalars().all()
+    """List all student users (accessible to teachers and admins)."""
+    rows = (
+        await db.execute(
+            select(User, StudentProfile.student_id_number)
+            .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
+            .where(User.role == UserRole.STUDENT)
+        )
+    ).all()
+    return [
+        {
+            "id": u.id, "email": u.email, "full_name": u.full_name,
+            "role": u.role, "is_active": u.is_active,
+            "student_id_number": sid,
+        }
+        for u, sid in rows
+    ]
 
 
 @router.get("/teachers", response_model=List[UserResponse])
@@ -69,9 +83,22 @@ async def get_users(
     db: AsyncSession = Depends(get_db),
     current_admin: User = Depends(dependencies.get_current_active_admin),
 ) -> Any:
-    """Retrieve all users. Admin only."""
-    result = await db.execute(select(User).offset(skip).limit(limit))
-    return result.scalars().all()
+    """Retrieve all users with student profiles populated. Admin only."""
+    rows = (
+        await db.execute(
+            select(User, StudentProfile.student_id_number)
+            .outerjoin(StudentProfile, StudentProfile.user_id == User.id)
+            .offset(skip).limit(limit)
+        )
+    ).all()
+    return [
+        {
+            "id": u.id, "email": u.email, "full_name": u.full_name,
+            "role": u.role, "is_active": u.is_active,
+            "student_id_number": sid if u.role == UserRole.STUDENT else None,
+        }
+        for u, sid in rows
+    ]
 
 
 @router.post("/", response_model=UserResponse, status_code=status.HTTP_201_CREATED)

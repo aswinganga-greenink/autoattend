@@ -18,6 +18,7 @@ import AdminML from "@/pages/admin/AdminML";
 import StudentOverview from "@/pages/student/StudentOverview";
 import StudentAttendance from "@/pages/student/StudentAttendance";
 import StudentProfile from "@/pages/student/StudentProfile";
+import StudentAddFace from "@/pages/student/StudentAddFace";
 import ParentOverview from "@/pages/parent/ParentOverview";
 import ParentAttendance from "@/pages/parent/ParentAttendance";
 import TimetablePage from "@/pages/shared/TimetablePage";
@@ -68,6 +69,7 @@ const App = () => (
               <Route path="timetable" element={<TimetablePage />} />
               <Route path="notifications" element={<NotificationsPage />} />
               <Route path="profile" element={<StudentProfile />} />
+              <Route path="add-face" element={<StudentAddFace />} />
               <Route path="settings" element={<SettingsPage />} />
             </Route>
 

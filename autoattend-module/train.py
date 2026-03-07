@@ -19,8 +19,10 @@ import numpy as np
 # CONFIGURATION
 # ──────────────────────────────────────────────
 DATASET_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
-MODEL_OUT    = os.path.join(os.path.dirname(__file__), "..", "trainer.yml")
-LABELS_OUT   = os.path.join(os.path.dirname(__file__), "..", "labels.npy")
+# Write model files into the module directory itself — this is where the backend's
+# ML_MODULE_DIR setting points, and where recognize_headless.py expects to find them.
+MODEL_OUT    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "trainer.yml")
+LABELS_OUT   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "labels.npy")
 FACE_SIZE    = (100, 100)   # must match capture_face.py → FACE_SAVE_SIZE
 
 # ──────────────────────────────────────────────
@@ -37,7 +39,11 @@ recognizer = cv2.face.LBPHFaceRecognizer_create()
 
 faces:     list = []
 labels:    list = []
-label_map: dict = {}          # {int_label: student_name}
+# label_map values MUST contain the student_id_number (folder name) — this is what
+# recognize_headless.py writes to the CSV's StudentID column, and what the backend
+# uses to look up StudentProfile.student_id_number when syncing attendance to the DB.
+label_map: dict = {}          # {int_label: {"id": student_id_number, "name": display_name}}
+name_map:  dict = {}          # {int_label: display_name} — for logging only
 next_label: int = 0
 
 dataset_path = os.path.abspath(DATASET_DIR)
@@ -68,7 +74,9 @@ for person_folder in people:
         display_name = person_folder   # fall back to folder name
 
     print(f"  Processing: {display_name}  (folder: {person_folder})")
-    label_map[next_label] = display_name
+    # Store both the folder name (student_id_number) and display name in label_map
+    label_map[next_label] = {"id": person_folder, "name": display_name}
+    name_map[next_label]  = display_name
     person_faces = 0
 
     for img_name in sorted(os.listdir(person_path)):
@@ -125,5 +133,6 @@ print(f"\n✅  Training complete!")
 print(f"     Model   → {model_path}")
 print(f"     Labels  → {labels_path}")
 print(f"     Samples → {len(faces)}")
-print(f"     Students: {list(label_map.values())}")
+print(f"     Student IDs : {list(label_map.values())}")
+print(f"     Display names: {list(name_map.values())}")
 print("\n    Run  recognize.py  next to start attendance.")

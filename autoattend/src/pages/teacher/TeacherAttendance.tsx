@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Search, Download, Calendar, ScanFace, X, Clock } from "lucide-react";
+import { Search, Download, Calendar, ScanFace, X, Clock, Plus } from "lucide-react";
 import { api } from "@/lib/api";
 
 const TeacherAttendance = () => {
@@ -17,6 +17,17 @@ const TeacherAttendance = () => {
   const [scanCountdown, setScanCountdown] = useState(0);
   const [scanResult, setScanResult] = useState<any>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Create Extra Session state
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newSession, setNewSession] = useState({
+    courseId: "",
+    date: new Date().toISOString().split("T")[0],
+    startTime: "09:00",
+    endTime: "10:00",
+    room: ""
+  });
+  const [creatingSession, setCreatingSession] = useState(false);
 
   useEffect(() => { fetchData(); }, []);
 
@@ -142,6 +153,50 @@ const TeacherAttendance = () => {
   const fmtCountdown = (sec: number) =>
     `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
 
+  // ── Create Extra Session ──────────────────────────────────
+  const handleCreateSession = async () => {
+    if (!newSession.courseId) return alert("Please select a course");
+    setCreatingSession(true);
+
+    // Combine date and time
+    const startObj = new Date(`${newSession.date}T${newSession.startTime}`);
+    const endObj = new Date(`${newSession.date}T${newSession.endTime}`);
+
+    try {
+      await api.post("/courses/sessions", {
+        course_id: newSession.courseId,
+        start_time: startObj.toISOString(),
+        end_time: endObj.toISOString(),
+        room: newSession.room || "TBA"
+      });
+      setShowCreateModal(false);
+      await fetchData(); // Refresh the list so the new session appears
+    } catch (e: any) {
+      alert("Failed to create session: " + (e.response?.data?.detail || e.message));
+    } finally {
+      setCreatingSession(false);
+    }
+  };
+
+  // Helper to check if session is active (± 15 mins grace period)
+  const isSessionActive = () => {
+    if (selectedSessionId === "all") return false;
+    const session = sessions.find(s => s.id === selectedSessionId);
+    if (!session) return false;
+
+    const now = new Date();
+    const start = new Date(session.start_time);
+    const end = new Date(session.end_time);
+
+    // Add 15 mins grace period to both ends
+    start.setMinutes(start.getMinutes() - 15);
+    end.setMinutes(end.getMinutes() + 15);
+
+    return now >= start && now <= end;
+  };
+
+  const activeStatus = isSessionActive();
+
   // ── CSV Export ───────────────────────────────────────────
   const exportCSV = () => {
     if (attendanceData.length === 0) return;
@@ -186,20 +241,37 @@ const TeacherAttendance = () => {
             </option>
           ))}
         </select>
+        <button
+          onClick={() => setShowCreateModal(true)}
+          className="px-3 py-2 bg-secondary hover:bg-secondary/80 text-foreground border border-border rounded-xl text-sm font-medium flex items-center gap-1.5 transition-colors shrink-0"
+        >
+          <Plus className="w-4 h-4" />
+          <span className="hidden sm:inline">New Session</span>
+        </button>
         {selectedSessionId !== "all" && (
           <span className="text-xs text-muted-foreground whitespace-nowrap">
             <span className="text-success font-semibold">{presentCount}</span> / {attendanceData.length} present
           </span>
         )}
-        <button
-          onClick={() => setShowScanModal(true)}
-          disabled={selectedSessionId === "all"}
-          className="px-4 py-2 rounded-xl text-sm font-medium flex items-center gap-2 bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40 shrink-0"
-        >
-          <ScanFace className="w-4 h-4" />
-          AI Face Scan
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setShowScanModal(true)}
+            disabled={selectedSessionId === "all" || !activeStatus}
+            title={!activeStatus && selectedSessionId !== "all" ? "Session is not currently active" : ""}
+            className="px-4 py-2 rounded-xl text-sm font-medium flex items-center gap-2 bg-primary/10 text-primary border border-primary/30 hover:bg-primary/20 transition-colors disabled:opacity-40"
+          >
+            <ScanFace className="w-4 h-4" />
+            AI Face Scan
+          </button>
+        </div>
       </div>
+
+      {!activeStatus && selectedSessionId !== "all" && (
+        <div className="bg-destructive/10 text-destructive border border-destructive/20 px-4 py-3 rounded-xl text-sm flex items-center gap-2">
+          <Clock className="w-4 h-4 shrink-0" />
+          <p>This session is not currently active. Attendance can only be marked during the scheduled time (± 15 mins).</p>
+        </div>
+      )}
 
       {/* Search + Export */}
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
@@ -250,10 +322,11 @@ const TeacherAttendance = () => {
                     <td className="px-5 py-3">
                       <button
                         onClick={() => toggleStatus(student.id, student.status, student.sessionId)}
-                        disabled={saving[student.id]}
+                        disabled={saving[student.id] || !activeStatus}
+                        title={!activeStatus ? "Session is not currently active" : ""}
                         className={`px-3 py-1 rounded-full text-xs font-medium transition-all disabled:opacity-50 ${student.status === "present"
-                            ? "bg-success/10 text-success hover:bg-success/20"
-                            : "bg-destructive/10 text-destructive hover:bg-destructive/20"
+                          ? "bg-success/10 text-success hover:bg-success/20"
+                          : "bg-destructive/10 text-destructive hover:bg-destructive/20"
                           }`}
                       >
                         {saving[student.id] ? "Saving..." : student.status === "present" ? "Present" : "Absent"}
@@ -355,6 +428,99 @@ const TeacherAttendance = () => {
           </div>
         </div>
       )}
+      {/* Create Extra Session Modal */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-background/80 backdrop-blur-sm">
+          <div className="bg-card w-full max-w-md rounded-2xl shadow-xl border border-border overflow-hidden">
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+              <div className="flex items-center gap-2 font-semibold text-foreground">
+                <Calendar className="w-4 h-4 text-primary" />
+                Create Extra Session
+              </div>
+              <button onClick={() => setShowCreateModal(false)} className="text-muted-foreground hover:text-foreground transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="text-sm font-medium text-foreground mb-1.5 block">Course</label>
+                <select
+                  value={newSession.courseId}
+                  onChange={e => setNewSession({ ...newSession, courseId: e.target.value })}
+                  className="w-full px-3 py-2 bg-secondary/50 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                >
+                  <option value="">— Select a Course —</option>
+                  {/* Extract unique courses from sessions array or another source if available. Since TeacherAttendance doesn't save the full course list in state directly, we can derive it from the sessions list for now since courses must have at least one session to be visible here usually, or better, we can map over a pure courses list if we saved it in fetchData. But we didn't save it. For simplicity, we extract unique courses from the existing sessions. */}
+                  {Array.from(new Map(sessions.map(s => [s.course_id, s.courseName])).entries()).map(([cid, cname]) => (
+                    <option key={cid} value={cid}>{cname}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium text-foreground mb-1.5 block">Date</label>
+                  <input
+                    type="date"
+                    value={newSession.date}
+                    onChange={e => setNewSession({ ...newSession, date: e.target.value })}
+                    className="w-full px-3 py-2 bg-secondary/50 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-foreground mb-1.5 block">Room (Optional)</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Lab 2"
+                    value={newSession.room}
+                    onChange={e => setNewSession({ ...newSession, room: e.target.value })}
+                    className="w-full px-3 py-2 bg-secondary/50 border border-border rounded-xl text-sm text-foreground whitespace-nowrap overflow-hidden text-ellipsis focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-sm font-medium text-foreground mb-1.5 block">Start Time</label>
+                  <input
+                    type="time"
+                    value={newSession.startTime}
+                    onChange={e => setNewSession({ ...newSession, startTime: e.target.value })}
+                    className="w-full px-3 py-2 bg-secondary/50 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-foreground mb-1.5 block">End Time</label>
+                  <input
+                    type="time"
+                    value={newSession.endTime}
+                    onChange={e => setNewSession({ ...newSession, endTime: e.target.value })}
+                    className="w-full px-3 py-2 bg-secondary/50 border border-border rounded-xl text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+                  />
+                </div>
+              </div>
+
+              <div className="pt-4 flex justify-end gap-3">
+                <button
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 rounded-xl text-sm font-medium text-foreground border border-border hover:bg-secondary/80 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleCreateSession}
+                  disabled={creatingSession || !newSession.courseId}
+                  className="px-4 py-2 rounded-xl text-sm font-medium bg-primary text-primary-foreground hover:bg-primary/90 transition-colors disabled:opacity-50"
+                >
+                  {creatingSession ? "Creating..." : "Create Session"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };

@@ -20,14 +20,15 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.orm import selectinload
 
 from app.api import dependencies
 from app.core.config import settings
 from app.db.database import get_db
+from app.core.utils import is_session_active
 from app.models.user import User, UserRole
-from app.models.course import Attendance, Session, AttendanceStatus
+from app.models.course import Attendance, Session, AttendanceStatus, Course
 from app.models.profiles import StudentProfile
 
 router = APIRouter()
@@ -94,39 +95,57 @@ async def ml_status(
 async def register_student_face(
     user_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(dependencies.get_current_active_teacher),
+    current_user: User = Depends(dependencies.get_current_active_user),
 ) -> Any:
     """
-    Launch capture_face.py for the given student.
-    A webcam window will open on the server machine.
-    The script runs interactively (press C/Q as per README).
-    This endpoint returns immediately — check dataset/ for output.
+    Capture 180 face photos for the given student (webcam opens on the server machine),
+    then immediately retrain the LBPH model with the new data.
+    Blocks until both capture and training are complete.
+    Students may only register themselves; teachers and admins may register any student.
     """
+    # Students may only register their own face
+    if current_user.role == UserRole.STUDENT and current_user.id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Students can only register their own face.",
+        )
+    # Only admin, teacher, or the student themselves are allowed
+    if current_user.role not in (UserRole.ADMIN, UserRole.TEACHER, UserRole.STUDENT):
+        raise HTTPException(status_code=403, detail="Not enough privileges")
     # Fetch student + their profile
-    result = await db.execute(
-        select(User)
-        .options(selectinload(User.student_profile))
-        .where(User.id == user_id, User.role == UserRole.STUDENT)
+    student_result = await db.execute(
+        select(User).where(User.id == user_id, User.role == UserRole.STUDENT)
     )
-    student: User | None = result.scalar_one_or_none()
+    student: User | None = student_result.scalar_one_or_none()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    profile = student.student_profile
+    # Query the profile separately (backref on StudentProfile returns a list, not scalar)
+    profile_result = await db.execute(
+        select(StudentProfile).where(StudentProfile.user_id == user_id)
+    )
+    profile = profile_result.scalar_one_or_none()
     if not profile:
         raise HTTPException(
             status_code=400,
-            detail="Student has no profile (student_id_number). Create the profile first.",
+            detail="Student has no profile (student_id_number). Ask an admin to set it up.",
         )
 
     student_id_number = profile.student_id_number
     student_name      = student.full_name
 
-    script = _module_path("capture_face.py")
-    if not os.path.exists(script):
+    capture_script = _module_path("capture_face.py")
+    if not os.path.exists(capture_script):
         raise HTTPException(
             status_code=500,
-            detail=f"capture_face.py not found at {script}",
+            detail=f"capture_face.py not found at {capture_script}",
+        )
+
+    train_script = _module_path("train.py")
+    if not os.path.exists(train_script):
+        raise HTTPException(
+            status_code=500,
+            detail=f"train.py not found at {train_script}",
         )
 
     dataset_dir = _module_path("dataset", student_id_number)
@@ -136,29 +155,78 @@ async def register_student_face(
     with open(os.path.join(dataset_dir, "name.txt"), "w") as f:
         f.write(student_name)
 
-    # Launch the interactive capture script in a new detached process
-    # (it needs a display/webcam — runs on whatever machine the server is on)
+    # ── Step 1: Capture faces ─────────────────────────────────────────────────
+    # Runs synchronously in a thread so we don't block the asyncio event loop.
+    # The webcam GUI window opens on the server machine.
+    # Student presses C to capture each angle, Q/done when all 180 photos taken.
+    loop = asyncio.get_event_loop()
     try:
-        proc = subprocess.Popen(
-            [sys.executable, script],
-            stdin=subprocess.PIPE,
-            cwd=settings.ML_MODULE_DIR,
-            # Pass student_id and name via stdin (script uses input())
-            # We'll write them immediately
+        capture_result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [
+                    sys.executable, capture_script,
+                    "--student-id",   student_id_number,
+                    "--student-name", student_name,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=600,   # 10-minute max for face capture
+                cwd=settings.ML_MODULE_DIR,
+            )
         )
-        # Send student_id and student_name to the script's stdin prompts
-        proc.stdin.write(f"{student_id_number}\n{student_name}\n".encode())
-        proc.stdin.flush()
-        proc.stdin.close()
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Face capture timed out (10 min limit)")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to launch capture script: {e}")
+        raise HTTPException(status_code=500, detail=f"Capture script error: {e}")
+
+    if capture_result.returncode not in (0, None):
+        raise HTTPException(
+            status_code=500,
+            detail=f"capture_face.py exited with code {capture_result.returncode}. "
+                   f"stderr: {capture_result.stderr[:400]}",
+        )
+
+    # Count saved images
+    saved_images = len([
+        f for f in os.listdir(dataset_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    ])
+
+    # ── Step 2: Auto-retrain model ────────────────────────────────────────────
+    try:
+        train_result = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [sys.executable, train_script],
+                capture_output=True,
+                text=True,
+                timeout=300,   # 5-minute training timeout
+                cwd=settings.ML_MODULE_DIR,
+            )
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Model retraining timed out after capture")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Training after capture failed: {e}")
+
+    if train_result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"train.py failed (code {train_result.returncode}). "
+                   f"stderr: {train_result.stderr[:400]}",
+        )
+
+    registered = _registered_students()
 
     return {
-        "message": "Face capture launched on server — follow webcam instructions.",
+        "message": "Face capture complete and model retrained successfully.",
         "student": student_name,
         "student_id_number": student_id_number,
-        "dataset_dir": dataset_dir,
-        "pid": proc.pid,
+        "images_captured": saved_images,
+        "model_retrained": True,
+        "total_registered_students": len(registered),
+        "train_stdout_tail": train_result.stdout[-500:],
     }
 
 
@@ -223,51 +291,61 @@ async def run_recognition(
     duration: int = Query(default=1800, ge=10, le=7200,
                           description="Recognition duration in seconds (10–7200)"),
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(dependencies.get_current_active_teacher),
+    current_teacher: User = Depends(dependencies.get_current_active_teacher),
 ) -> Any:
-    """
-    Run headless face recognition for `duration` seconds using the webcam,
-    then parse attendance.csv and upsert results into the Attendance table
-    for the given session.
-    """
+    """Run face recognition exactly like manual terminal runs, but linked to a session."""
     if not _model_exists() or not _labels_exists():
         raise HTTPException(
             status_code=400,
             detail="Model not trained. Run POST /ml/train first.",
         )
 
-    # Verify the session exists
-    session_result = await db.execute(
-        select(Session)
-        .options(selectinload(Session.course))
-        .where(Session.id == session_id)
-    )
-    session: Session | None = session_result.scalar_one_or_none()
+    session = (await db.execute(
+        select(Session).options(selectinload(Session.course)).where(Session.id == session_id)
+    )).scalar_one_or_none()
+
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    script = _module_path("recognize_headless.py")
+    # Strict Timetable Rule: Enforce time check (Allow admins to bypass)
+    if current_teacher.role != UserRole.ADMIN:
+        if not is_session_active(session):
+            raise HTTPException(
+                status_code=403, 
+                detail="Cannot start AI attendance scan outside of scheduled class time"
+            )
+
+    script = _module_path("recognize.py")
     if not os.path.exists(script):
-        raise HTTPException(
-            status_code=500,
-            detail=f"recognize_headless.py not found at {script}",
-        )
+        raise HTTPException(status_code=500, detail="recognize.py not found in module")
 
     csv_path = _module_path("attendance.csv")
+
+    # Forward the display environment so cv2.imshow works on the local machine
+    import copy
+    subprocess_env = copy.copy(os.environ)
+    subprocess_env.setdefault("DISPLAY", ":0")
+    subprocess_env.setdefault("QT_QPA_PLATFORM", "xcb") # Just in case
+
+    # Use the module venv's python if available, otherwise current interpreter
+    module_python = os.path.join(settings.ML_MODULE_DIR, "venv", "bin", "python")
+    python_exe = module_python if os.path.exists(module_python) else sys.executable
 
     try:
         result = subprocess.run(
             [
-                sys.executable, script,
+                python_exe, script,
                 "--duration", str(duration),
                 "--output",   csv_path,
                 "--model",    _module_path("trainer.yml"),
                 "--labels",   _module_path("labels.npy"),
+                "--session",  str(session_id),
             ],
             capture_output=True,
             text=True,
-            timeout=duration + 60,   # generous timeout
+            timeout=duration + 60,
             cwd=settings.ML_MODULE_DIR,
+            env=subprocess_env,
         )
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="Recognition timed out")
@@ -319,11 +397,24 @@ async def _sync_csv_to_db(
     with open(csv_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            student_id_number = row.get("StudentID", "").strip()
+            # Handle legacy header where StudentID was called Name
+            student_id_number = (row.get("StudentID") or row.get("Name", "")).strip()
             raw_status        = row.get("Status", "absent").strip().lower()
+
+            # The DictReader puts extra un-headered columns into a list under `None` if the file
+            # has legacy 5-column headers but 7-column data. The 6th column (index 0 of extra) is SessionID.
+            csv_session_id = row.get("SessionID")
+            if csv_session_id is None and None in row and len(row[None]) >= 1:
+                csv_session_id = row[None][0]
+            
+            csv_session_id = (csv_session_id or "").strip()
 
             if not student_id_number:
                 skipped += 1
+                continue
+
+            # If the row has a SessionID and it doesn't match the current one, skip it
+            if csv_session_id and csv_session_id != str(session_id):
                 continue
 
             # Resolve student_id_number → StudentProfile → User

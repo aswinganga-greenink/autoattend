@@ -1,4 +1,4 @@
-import { Users, UserCheck, UserX, Activity, MapPin, Clock, Cpu } from "lucide-react";
+import { Users, UserCheck, UserX, Activity, MapPin, Clock, Cpu, BookOpen } from "lucide-react";
 import StatCard from "@/components/StatCard";
 import CircularProgress from "@/components/CircularProgress";
 import { useAuth } from "@/contexts/AuthContext";

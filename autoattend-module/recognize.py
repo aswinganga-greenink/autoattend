@@ -16,17 +16,33 @@ import cv2
 import numpy as np
 import csv
 import os
+import sys
 import time
+import argparse
 from datetime import datetime
 
 # ──────────────────────────────────────────────
 # CONFIGURATION
 # ──────────────────────────────────────────────
+parser = argparse.ArgumentParser(description="Face recognition attendance")
+parser.add_argument("--duration",  type=int,  default=0,
+                    help="How many seconds to run (0 = run forever)")
+parser.add_argument("--output",    type=str,  default=None,
+                    help="Path to write attendance.csv")
+parser.add_argument("--model",     type=str,  default=None,
+                    help="Path to trainer.yml")
+parser.add_argument("--labels",    type=str,  default=None,
+                    help="Path to labels.npy")
+parser.add_argument("--session",   type=str,  default="",
+                    help="Session UUID (used as SessionID in the CSV)")
+args = parser.parse_args()
+
 CAMERA_INDEX         = 0      # built-in webcam
 
-MODEL_PATH      = os.path.join(os.path.dirname(__file__), "..", "trainer.yml")
-LABELS_PATH     = os.path.join(os.path.dirname(__file__), "..", "labels.npy")
-ATTENDANCE_FILE = os.path.join(os.path.dirname(__file__), "..", "attendance.csv")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH      = args.model   or os.path.join(_HERE, "trainer.yml")
+LABELS_PATH     = args.labels  or os.path.join(_HERE, "labels.npy")
+ATTENDANCE_FILE = args.output  or os.path.join(_HERE, "attendance.csv")
 
 # Recognition tuning
 # LBPH distance: 0 = perfect match, higher = worse.
@@ -36,11 +52,16 @@ ATTENDANCE_FILE = os.path.join(os.path.dirname(__file__), "..", "attendance.csv"
 #   80–100      → weak match
 #   > 100       → almost certainly wrong person
 CONFIDENCE_THRESHOLD = 90
-CONFIRM_FRAMES       = 8     # consecutive confirmed frames before starting timer
-MIN_FACE_AREA        = 4000  # ignore tiny detections (px²)
+CONFIRM_FRAMES       = 5     # consecutive confirmed frames before starting timer (reduced for faster response)
+MIN_FACE_AREA        = 2500  # ignore tiny detections (px²) — reduced from 4000 to catch more distances
 
 # Attendance rules
-MIN_PRESENT_SECONDS  = 20    # student must appear for at least this long → "Present"
+if args.duration > 0:
+    MIN_PRESENT_SECONDS = args.duration * 0.50
+    print(f"INFO: Running for {args.duration}s. Present threshold set to 50% ({MIN_PRESENT_SECONDS:.0f}s)")
+else:
+    MIN_PRESENT_SECONDS = 20
+    print(f"INFO: Running indefinitely. Present threshold set to {MIN_PRESENT_SECONDS}s")
 
 # ──────────────────────────────────────────────
 # LOAD MODEL + LABELS
@@ -66,7 +87,7 @@ recognizer = cv2.face.LBPHFaceRecognizer_create()
 recognizer.read(model_path)
 
 label_map: dict = np.load(labels_path, allow_pickle=True).item()
-print(f"✅  Model loaded — {len(label_map)} registered student(s): {list(label_map.values())}")
+print(f"✅  Model loaded — {len(label_map)} registered student(s): {[v['name'] for v in label_map.values()]}")
 
 # ──────────────────────────────────────────────
 # TRACKING STATE
@@ -88,7 +109,21 @@ if not cap.isOpened():
     print(f"❌  Cannot open camera {CAMERA_INDEX}.")
     exit(1)
 
-print("🎥  Recognition running — press  Q  to quit and save attendance.\n")
+# ── Pre-warm camera so the sensor has time to adjust exposure ──
+print("📸  Warming up camera...")
+for _ in range(10):
+    cap.read()
+print("🎥  Recognition running — press  Q or C  to quit and save attendance.\n")
+
+window_name = "AutoAttender - Recognition"
+cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+cv2.resizeWindow(window_name, 800, 600)
+
+# Show the window immediately so user knows it started
+ret, _init_frame = cap.read()
+if ret:
+    cv2.imshow(window_name, _init_frame)
+    cv2.waitKey(1)
 
 # ──────────────────────────────────────────────
 # MAIN LOOP
@@ -102,7 +137,10 @@ last_color  = (200, 200, 200)
 miss_streak = 0      # frames since last successful detection
 MAX_MISS    = 8      # frames to hold last position before clearing
 
-while True:
+start_time = time.time()
+end_time   = start_time + args.duration if args.duration > 0 else float("inf")
+
+while time.time() < end_time:
     ret, frame = cap.read()
     if not ret:
         print("⚠️  Frame grab failed.")
@@ -112,7 +150,10 @@ while True:
     gray_eq = cv2.equalizeHist(gray)   # improve contrast for recognition
 
     faces = face_cascade.detectMultiScale(
-        gray_eq, scaleFactor=1.05, minNeighbors=4, minSize=(60, 60)
+        gray_eq,
+        scaleFactor=1.1,    # was 1.05 — slightly faster, still catches most scales
+        minNeighbors=3,     # was 4 — more sensitive, catches more faces
+        minSize=(50, 50)    # was (60,60) — detect slightly smaller faces
     )
 
     now = time.time()
@@ -127,42 +168,45 @@ while True:
         label, confidence = recognizer.predict(face_roi)
 
         # DEBUG: prints live — use these numbers to fine-tune CONFIDENCE_THRESHOLD
-        name_guess = label_map.get(label, "?")
+        name_guess = label_map.get(label, {}).get("name", "?")
         print(f"  score={confidence:.1f}  guess={name_guess}  threshold={CONFIDENCE_THRESHOLD}")
 
         if confidence <= CONFIDENCE_THRESHOLD and label in label_map:
-            name = label_map[label]
-            frame_counter[name] = frame_counter.get(name, 0) + 1
+            sid = label_map[label]["id"]
+            sname = label_map[label]["name"]
+            frame_counter[sid] = frame_counter.get(sid, 0) + 1
 
-            if frame_counter[name] >= CONFIRM_FRAMES:
-                seen_this_frame.add(name)
+            if frame_counter[sid] >= CONFIRM_FRAMES:
+                seen_this_frame.add(sid)
 
-                if name not in attendance:
-                    attendance[name] = {
+                if sid not in attendance:
+                    attendance[sid] = {
+                        "name":       sname,
                         "last_seen":  now,
                         "total_time": 0.0,
                         "present":    False,
                     }
                 else:
-                    elapsed = now - attendance[name]["last_seen"]
+                    elapsed = now - attendance[sid]["last_seen"]
                     if elapsed < 10:
-                        attendance[name]["total_time"] += elapsed
-                    attendance[name]["last_seen"] = now
+                        attendance[sid]["total_time"] += elapsed
+                    attendance[sid]["last_seen"] = now
 
-                if attendance[name]["total_time"] >= MIN_PRESENT_SECONDS:
-                    attendance[name]["present"] = True
+                if attendance[sid]["total_time"] >= MIN_PRESENT_SECONDS:
+                    attendance[sid]["present"] = True
 
-                total_mins = int(attendance[name]["total_time"] / 60)
-                total_secs = int(attendance[name]["total_time"] % 60)
-                label_text  = f"{name}  {total_mins}m {total_secs:02d}s"
+                total_mins = int(attendance[sid]["total_time"] / 60)
+                total_secs = int(attendance[sid]["total_time"] % 60)
+                label_text  = f"{sname}  {total_mins}m {total_secs:02d}s"
                 box_color   = (0, 255, 0)   # green = recognised
             else:
-                label_text = "Verifying..."
+                label_text = f"Verifying {sname}..."
                 box_color  = (0, 200, 255)  # yellow = building confidence
 
         else:
             # Unknown or poor match
-            frame_counter.pop(label_map.get(label, ""), None)  # reset counter
+            sid_to_pop = label_map.get(label, {}).get("id", "")
+            frame_counter.pop(sid_to_pop, None)  # reset counter
             label_text = "Unknown"
             box_color  = (0, 0, 255)   # red
 
@@ -191,7 +235,8 @@ while True:
 
     # ── HUD — list confirmed students and their time ──
     hud_y = 25
-    for sname, data in attendance.items():
+    for sid, data in attendance.items():
+        sname = data.get("name", sid)
         mins  = int(data["total_time"] / 60)
         secs  = int(data["total_time"] % 60)
         mark  = "✓" if data["present"] else "…"
@@ -201,60 +246,54 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
         hud_y += 25
 
-    cv2.imshow("AutoAttender — Recognition", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    cv2.imshow(window_name, frame)
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q') or key == ord('c'):
         break
 
 cap.release()
 cv2.destroyAllWindows()
 
 # ──────────────────────────────────────────────
-# WRITE ATTENDANCE CSV
+# WRITE ATTENDANCE CSV (Per Session)
 # ──────────────────────────────────────────────
 today      = datetime.now().strftime("%Y-%m-%d")
 time_stamp = datetime.now().strftime("%H:%M:%S")
-att_path   = os.path.abspath(ATTENDANCE_FILE)
+session_start_str = datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S")
 
-# Check which records for today already exist so we don't double-write
-existing_today: set = set()
-if os.path.exists(att_path):
-    with open(att_path, newline="") as rf:
-        for row in csv.reader(rf):
-            if len(row) >= 2 and row[0] == today:
-                existing_today.add(row[1])
+all_students = set(v["id"] for v in label_map.values())
+att_path = os.path.abspath(ATTENDANCE_FILE)
 
-all_students = set(label_map.values())
-
+write_header = not os.path.exists(att_path) or os.path.getsize(att_path) == 0
 with open(att_path, "a", newline="") as f:
     writer = csv.writer(f)
-
-    # Write header only if file is new / empty
-    if os.path.getsize(att_path) == 0:
-        writer.writerow(["Date", "Name", "Status", "Minutes", "Recorded At"])
-
-    for student in sorted(all_students):
-        if student in existing_today:
-            continue  # already recorded for today — skip
-
-        if student in attendance and attendance[student]["present"]:
-            mins   = int(attendance[student]["total_time"] / 60)
-            status = "Present"
-        else:
-            mins   = int(attendance.get(student, {}).get("total_time", 0) / 60)
-            status = "Absent"
-
-        writer.writerow([today, student, status, mins, time_stamp])
+    if write_header:
+        writer.writerow(["Date", "StudentID", "Status", "Minutes", "RecordedAt", "SessionID", "SessionStart"])
+        
+    for sid in sorted(all_students):
+        info   = attendance.get(sid, {})
+        status = "present" if info.get("present") else "absent"
+        mins   = round(info.get("total_time", 0) / 60, 1)
+        writer.writerow([today, sid, status, mins, time_stamp, args.session, session_start_str])
 
 print("\n📊  Session Summary")
 print("─" * 40)
-for student in sorted(all_students):
-    if student in attendance:
-        mins  = int(attendance[student]["total_time"] / 60)
-        secs  = int(attendance[student]["total_time"] % 60)
-        mark  = "✅ Present" if attendance[student]["present"] else "❌ Absent"
-        print(f"  {mark}  {student}  —  {mins}m {secs:02d}s on screen")
+for sid in sorted(all_students):
+    if sid in attendance:
+        sname = attendance[sid].get("name", sid)
+        mins  = int(attendance[sid]["total_time"] / 60)
+        secs  = int(attendance[sid]["total_time"] % 60)
+        mark  = "✅ Present" if attendance[sid]["present"] else "❌ Absent"
+        print(f"  {mark}  {sname} ({sid})  —  {mins}m {secs:02d}s on screen")
     else:
-        print(f"  ❌ Absent   {student}  —  never appeared")
+        # We don't have the name easily if they never appeared, but sid works
+        # Let's find their name from label_map just to be nice
+        sname = sid
+        for v in label_map.values():
+            if v["id"] == sid:
+                sname = v["name"]
+                break
+        print(f"  ❌ Absent   {sname} ({sid})  —  never appeared")
 
 print("─" * 40)
 print(f"✅  Attendance saved → {att_path}")

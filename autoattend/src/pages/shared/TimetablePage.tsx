@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { api } from "@/lib/api";
 import { format, parseISO, getDay } from "date-fns";
+import { CalendarDays, List as ListIcon } from "lucide-react";
 
 interface Session {
   id: string;
@@ -23,7 +24,9 @@ interface TimetableRow {
 const TimetablePage = () => {
   const days = ["monday", "tuesday", "wednesday", "thursday", "friday"] as const;
   const [timetableData, setTimetableData] = useState<TimetableRow[]>([]);
+  const [rawSessions, setRawSessions] = useState<Session[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
 
   useEffect(() => {
     fetchTimetable();
@@ -33,6 +36,10 @@ const TimetablePage = () => {
     try {
       const res = await api.get<Session[]>("/timetable/");
       const sessions = res.data;
+
+      // Save sorted raw sessions for list view
+      const sortedRaw = [...sessions].sort((a, b) => new Date(a.start_time).getTime() - new Date(b.start_time).getTime());
+      setRawSessions(sortedRaw);
 
       // Group sessions by time range: "HH:mm - HH:mm"
       const grouped: Record<string, TimetableRow> = {};
@@ -78,34 +85,88 @@ const TimetablePage = () => {
 
   return (
     <div className="space-y-6">
+      <div className="flex items-center justify-end gap-2 mb-2">
+        <button
+          onClick={() => setViewMode("grid")}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${viewMode === "grid" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:bg-secondary/80"}`}
+        >
+          <CalendarDays className="w-4 h-4" />
+          <span className="hidden sm:inline">Weekly Grid</span>
+        </button>
+        <button
+          onClick={() => setViewMode("list")}
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${viewMode === "list" ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground hover:bg-secondary/80"}`}
+        >
+          <ListIcon className="w-4 h-4" />
+          <span className="hidden sm:inline">Chronological List</span>
+        </button>
+      </div>
+
       <div className="glass-card overflow-hidden">
         {isLoading ? (
           <div className="p-8 text-center text-muted-foreground">Loading timetable...</div>
-        ) : timetableData.length === 0 ? (
-          <div className="p-8 text-center text-muted-foreground">No classes scheduled for this semester.</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Time</th>
-                  {days.map((d) => (
-                    <th key={d} className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3 capitalize">{d}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {timetableData.map((row, i) => (
-                  <tr key={i} className="border-b border-border/50">
-                    <td className="px-5 py-3 text-sm font-medium text-primary whitespace-nowrap">{row.time}</td>
+        ) : viewMode === "grid" ? (
+          timetableData.length === 0 ? (
+            <div className="p-8 text-center text-muted-foreground">No classes scheduled for this semester.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Time</th>
                     {days.map((d) => (
-                      <td key={d} className="px-5 py-3 text-sm text-foreground">{row[d] || "-"}</td>
+                      <th key={d} className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3 capitalize">{d}</th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {timetableData.map((row, i) => (
+                    <tr key={i} className="border-b border-border/50">
+                      <td className="px-5 py-3 text-sm font-medium text-primary whitespace-nowrap">{row.time}</td>
+                      {days.map((d) => (
+                        <td key={d} className="px-5 py-3 text-sm text-foreground">{row[d] || "-"}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        ) : (
+          rawSessions.length === 0 ? (
+            <div className="p-8 text-center text-muted-foreground">No sessions scheduled yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-border">
+                    <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Date</th>
+                    <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Time</th>
+                    <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Course</th>
+                    <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Room</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rawSessions.map((session) => (
+                    <tr key={session.id} className="border-b border-border/50 hover:bg-secondary/20">
+                      <td className="px-5 py-3 text-sm font-medium text-foreground whitespace-nowrap">
+                        {format(parseISO(session.start_time), "MMM d, yyyy (EEEE)")}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                        {format(parseISO(session.start_time), "hh:mm a")} - {format(parseISO(session.end_time), "hh:mm a")}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-primary font-medium">
+                        {session.course?.name || "Unknown"}
+                      </td>
+                      <td className="px-5 py-3 text-sm text-muted-foreground">
+                        {session.room || "-"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
         )}
       </div>
     </div>

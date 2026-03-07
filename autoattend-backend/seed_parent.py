@@ -24,4 +24,5 @@ async def main():
         await link_parent_to_student(db, 'Sisira@gmail.com', 'aswinganga@gmail.com')
         await link_parent_to_student(db, 'sulochana@gmail.com', 'vaishna@gmail.com')
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

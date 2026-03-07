@@ -35,10 +35,17 @@ async def create_course(
     current_teacher: User = Depends(dependencies.get_current_active_teacher),
 ) -> Any:
     """Create a new course. Teachers only."""
+    teacher_id = course_in.teacher_id
+    if not teacher_id:
+        if current_teacher.role == UserRole.TEACHER:
+            teacher_id = current_teacher.id
+        else:
+            raise HTTPException(status_code=400, detail="Teacher ID is required when created by admin")
+
     db_course = Course(
         name=course_in.name,
         description=course_in.description,
-        teacher_id=current_teacher.id,
+        teacher_id=teacher_id,
         class_group_id=course_in.class_group_id,
         schedule_info=course_in.schedule_info,
     )

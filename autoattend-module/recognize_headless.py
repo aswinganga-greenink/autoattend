@@ -33,6 +33,8 @@ parser.add_argument("--model",     type=str,  default=None,
                     help="Path to trainer.yml (default: auto-detected)")
 parser.add_argument("--labels",    type=str,  default=None,
                     help="Path to labels.npy (default: auto-detected)")
+parser.add_argument("--session",   type=str,  default="",
+                    help="Session UUID (used as SessionID in the CSV)")
 args = parser.parse_args()
 
 # ─────────────────────────────────────────────
@@ -48,9 +50,9 @@ ATTENDANCE_FILE = args.output  or os.path.join(_HERE, "attendance.csv")
 # RECOGNITION CONFIG
 # ─────────────────────────────────────────────
 CONFIDENCE_THRESHOLD = 90   # LBPH distance — lower = better
-CONFIRM_FRAMES       = 8    # consecutive frames before counting as seen
-MIN_FACE_AREA        = 4000 # px² — ignore tiny faces
-MIN_PRESENT_SECONDS  = 20   # seconds on-screen to mark PRESENT
+CONFIRM_FRAMES       = 5    # consecutive frames before counting as seen
+MIN_FACE_AREA        = 2500 # px² — ignore tiny faces
+# MIN_PRESENT_SECONDS is now computed as 50% of session duration at runtime
 
 # ─────────────────────────────────────────────
 # LOAD MODEL + LABELS
@@ -71,7 +73,9 @@ recognizer = cv2.face.LBPHFaceRecognizer_create()
 recognizer.read(MODEL_PATH)
 
 label_map: dict = np.load(LABELS_PATH, allow_pickle=True).item()
-print(f"INFO: Model loaded — {len(label_map)} student(s): {list(label_map.values())}", flush=True)
+# label_map: {int_label: {"id": student_id_number, "name": display_name}}
+# The CSV StudentID column needs to match StudentProfile.student_id_number in the DB.
+print(f"INFO: Model loaded — {len(label_map)} student(s): {[v['id'] for v in label_map.values()]}", flush=True)
 
 # ─────────────────────────────────────────────
 # TRACKING STATE
@@ -87,17 +91,25 @@ if not cap.isOpened():
     print("ERROR: Cannot open camera 0.", file=sys.stderr)
     sys.exit(1)
 
-# Warm up
-cap.read()
+# Warm up camera
+print("INFO: Warming up camera...", flush=True)
+for _ in range(10):
+    cap.read()
 
 start_time   = time.time()
 end_time     = start_time + args.duration
 frames_read  = 0
 
-print(f"INFO: Recognition started — running for {args.duration}s …", flush=True)
+# Present threshold = 50% of the total session time
+MIN_PRESENT_SECONDS = args.duration * 0.50
+
+print(f"INFO: Recognition started — running for {args.duration}s (present threshold: {MIN_PRESENT_SECONDS:.0f}s) …", flush=True)
+
+SESSION_ID    = args.session
+SESSION_START = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 # ─────────────────────────────────────────────
-# MAIN LOOP  (no imshow — headless)
+# MAIN LOOP  (no display — pure headless)
 # ─────────────────────────────────────────────
 while time.time() < end_time:
     ret, frame = cap.read()
@@ -111,7 +123,10 @@ while time.time() < end_time:
     gray_eq = cv2.equalizeHist(gray)
 
     faces = face_cascade.detectMultiScale(
-        gray_eq, scaleFactor=1.05, minNeighbors=4, minSize=(60, 60)
+        gray_eq,
+        scaleFactor=1.1,
+        minNeighbors=3,
+        minSize=(50, 50)
     )
 
     now = time.time()
@@ -126,68 +141,65 @@ while time.time() < end_time:
         label, confidence = recognizer.predict(face_roi)
 
         if confidence <= CONFIDENCE_THRESHOLD and label in label_map:
-            name = label_map[label]          # human-readable name
-            # Note: label_map key is int (label index), value is student_id_number
-            frame_counter[name] = frame_counter.get(name, 0) + 1
+            sid = label_map[label]["id"]          # student ID string
+            sname = label_map[label]["name"]      # human name (for logs if needed)
 
-            if frame_counter[name] >= CONFIRM_FRAMES:
-                if name not in attendance:
-                    attendance[name] = {
+            frame_counter[sid] = frame_counter.get(sid, 0) + 1
+
+            if frame_counter[sid] >= CONFIRM_FRAMES:
+                if sid not in attendance:
+                    attendance[sid] = {
+                        "name":       sname,
                         "last_seen":  now,
                         "total_time": 0.0,
                         "present":    False,
                     }
                 else:
-                    elapsed = now - attendance[name]["last_seen"]
+                    elapsed = now - attendance[sid]["last_seen"]
                     if elapsed < 10:            # ignore gaps > 10 s
-                        attendance[name]["total_time"] += elapsed
-                    attendance[name]["last_seen"] = now
+                        attendance[sid]["total_time"] += elapsed
+                    attendance[sid]["last_seen"] = now
 
-                if attendance[name]["total_time"] >= MIN_PRESENT_SECONDS:
-                    attendance[name]["present"] = True
+                if attendance[sid]["total_time"] >= MIN_PRESENT_SECONDS:
+                    attendance[sid]["present"] = True
+
+                label_text = f"{sname}  {int(attendance[sid]['total_time']//60)}m {int(attendance[sid]['total_time']%60):02d}s"
+                box_color  = (0, 255, 0) if attendance[sid]["present"] else (0, 200, 255)
 
                 elapsed_total = int(time.time() - start_time)
                 print(
-                    f"INFO: {name}  seen={frame_counter[name]}  "
-                    f"on-screen={attendance[name]['total_time']:.1f}s  "
-                    f"present={attendance[name]['present']}  "
+                    f"INFO: {sname}  seen={frame_counter[sid]}  "
+                    f"on-screen={attendance[sid]['total_time']:.1f}s  "
+                    f"present={attendance[sid]['present']}  "
                     f"elapsed={elapsed_total}s",
                     flush=True,
                 )
         else:
-            frame_counter.pop(label_map.get(label, ""), None)
+            sid_to_pop = label_map.get(label, {}).get("id", "")
+            frame_counter.pop(sid_to_pop, None)
 
 cap.release()
 print(f"INFO: Camera released. Frames processed: {frames_read}", flush=True)
 
 # ─────────────────────────────────────────────
-# WRITE ATTENDANCE CSV
+# WRITE ATTENDANCE CSV  (per session + student, not per day)
 # ─────────────────────────────────────────────
 today      = datetime.now().strftime("%Y-%m-%d")
 time_stamp = datetime.now().strftime("%H:%M:%S")
-all_students = set(label_map.values())   # all registered student_id_numbers
+all_students = set(v["id"] for v in label_map.values())
 
-# De-duplicate: don't re-write if today's record already exists
-existing_today: set = set()
-if os.path.exists(ATTENDANCE_FILE):
-    with open(ATTENDANCE_FILE, newline="") as rf:
-        for row in csv.reader(rf):
-            if len(row) >= 2 and row[0] == today:
-                existing_today.add(row[1])
-
+# Write all students (present or absent) — one fresh row per session
+write_header = not os.path.exists(ATTENDANCE_FILE) or os.path.getsize(ATTENDANCE_FILE) == 0
 with open(ATTENDANCE_FILE, "a", newline="") as f:
     writer = csv.writer(f)
-    if os.path.getsize(ATTENDANCE_FILE) == 0:
-        writer.writerow(["Date", "StudentID", "Status", "Minutes", "RecordedAt"])
+    if write_header:
+        writer.writerow(["Date", "StudentID", "Status", "Minutes", "RecordedAt", "SessionID", "SessionStart"])
 
     for sid in sorted(all_students):
-        if sid in existing_today:
-            continue
-
         info   = attendance.get(sid, {})
         status = "present" if info.get("present") else "absent"
-        mins   = int(info.get("total_time", 0) / 60)
-        writer.writerow([today, sid, status, mins, time_stamp])
+        mins   = round(info.get("total_time", 0) / 60, 1)
+        writer.writerow([today, sid, status, mins, time_stamp, SESSION_ID, SESSION_START])
 
 print(f"INFO: Attendance written → {ATTENDANCE_FILE}", flush=True)
 

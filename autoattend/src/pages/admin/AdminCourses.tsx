@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { BookOpen, Trash2, Plus, X } from "lucide-react";
+import { BookOpen, Trash2, Plus, X, Edit2 } from "lucide-react";
 
 const AdminCourses = () => {
     const [courses, setCourses] = useState<any[]>([]);
@@ -15,6 +15,7 @@ const AdminCourses = () => {
         teacher_id: "",
     });
     const [deleting, setDeleting] = useState<string | null>(null);
+    const [editing, setEditing] = useState<any | null>(null);
 
     useEffect(() => {
         fetchAll();
@@ -46,6 +47,24 @@ const AdminCourses = () => {
         } catch (err: any) {
             console.error(err);
             alert("Failed to create course: " + (err.response?.data?.detail || "Check console."));
+        }
+    };
+
+    const handleUpdate = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!editing) return;
+        try {
+            const payload: any = { ...editing };
+            if (!payload.class_group_id) payload.class_group_id = null;
+            if (!payload.schedule_info) payload.schedule_info = null;
+            if (!payload.teacher_id) payload.teacher_id = null; // Important: API uses teacher_id: Optional[UUID] = None
+
+            await api.put(`/courses/${editing.id}`, payload);
+            setEditing(null);
+            fetchAll();
+        } catch (err: any) {
+            console.error(err);
+            alert("Failed to update course: " + (err.response?.data?.detail || "Check console."));
         }
     };
 
@@ -135,6 +154,69 @@ const AdminCourses = () => {
                 </div>
             )}
 
+            {editing && (
+                <div className="glass-card p-6">
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="font-semibold text-foreground">Edit Course: {editing.name}</h3>
+                        <button onClick={() => setEditing(null)} className="p-2 -mr-2 text-muted-foreground hover:text-foreground">
+                            <X className="w-4 h-4" />
+                        </button>
+                    </div>
+                    <form onSubmit={handleUpdate} className="space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <input
+                                required
+                                type="text"
+                                placeholder="Course Name"
+                                className={inputCls}
+                                value={editing.name || ""}
+                                onChange={e => setEditing({ ...editing, name: e.target.value })}
+                            />
+                            <input
+                                type="text"
+                                placeholder="Schedule (e.g. Mon, Wed 10AM–11AM)"
+                                className={inputCls}
+                                value={editing.schedule_info || ""}
+                                onChange={e => setEditing({ ...editing, schedule_info: e.target.value })}
+                            />
+                            <select
+                                className={inputCls}
+                                value={editing.class_group_id || ""}
+                                onChange={e => setEditing({ ...editing, class_group_id: e.target.value })}
+                            >
+                                <option value="">No Class (Standalone)</option>
+                                {classes.map(cls => (
+                                    <option key={cls.id} value={cls.id}>{cls.name}</option>
+                                ))}
+                            </select>
+                            <select
+                                className={inputCls}
+                                value={editing.teacher_id || ""}
+                                onChange={e => setEditing({ ...editing, teacher_id: e.target.value })}
+                            >
+                                <option value="">Assign Teacher (Optional)</option>
+                                {teachers.map(t => (
+                                    <option key={t.id} value={t.id}>{t.full_name} ({t.email})</option>
+                                ))}
+                            </select>
+                        </div>
+                        <textarea
+                            placeholder="Course Description (Optional)"
+                            className={inputCls}
+                            value={editing.description || ""}
+                            onChange={e => setEditing({ ...editing, description: e.target.value })}
+                            rows={2}
+                        />
+                        <button
+                            type="submit"
+                            className="px-4 py-2 bg-primary text-primary-foreground rounded-xl text-sm font-medium hover:opacity-90 transition-opacity"
+                        >
+                            Save Changes
+                        </button>
+                    </form>
+                </div>
+            )}
+
             <div className="glass-card overflow-hidden">
                 <table className="w-full text-left">
                     <thead className="border-b border-border text-xs text-muted-foreground uppercase">
@@ -161,13 +243,21 @@ const AdminCourses = () => {
                                     </td>
                                     <td className="px-5 py-3 text-sm text-muted-foreground">{c.schedule_info || "—"}</td>
                                     <td className="px-5 py-3 text-right">
-                                        <button
-                                            onClick={() => handleDelete(c.id)}
-                                            disabled={deleting === c.id}
-                                            className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40"
-                                        >
-                                            <Trash2 className="w-4 h-4" />
-                                        </button>
+                                        <div className="flex items-center justify-end gap-2">
+                                            <button
+                                                onClick={() => { setEditing(c); setShowAdd(false); }}
+                                                className="p-1.5 rounded-lg text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                                            >
+                                                <Edit2 className="w-4 h-4" />
+                                            </button>
+                                            <button
+                                                onClick={() => handleDelete(c.id)}
+                                                disabled={deleting === c.id}
+                                                className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             );

@@ -197,7 +197,7 @@ const StudentOverview = () => {
         <h3 className="font-semibold text-foreground mb-4 text-sm">Announcements</h3>
         <div className="space-y-2">
           <div className="p-3 bg-secondary/30 rounded-xl">
-            <p className="text-sm text-foreground">Welcome to VisionAttend!</p>
+            <p className="text-sm text-foreground">Welcome to AutoAttend!</p>
             <p className="text-xs text-muted-foreground">Make sure to enroll in your required courses.</p>
           </div>
         </div>
